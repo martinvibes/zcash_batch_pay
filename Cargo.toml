@@ -1,0 +1,17 @@
+[package]
+name = "zcash_batch_pay"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+zcash_client_backend = { git ="https://github.com/zcash/librustzcash.git", rev = "9f47de607641068813d3768a893fda822c93041b", features = ["lightwalletd-tonic-transport"] }
+zcash_client_memory = { git ="https://github.com/zcash/librustzcash.git", rev = "9f47de607641068813d3768a893fda822c93041b" }
+zcash_protocol = { git ="https://github.com/zcash/librustzcash.git", rev = "9f47de607641068813d3768a893fda822c93041b" }
+
+## gRPC Web dependencies
+prost = { version = "0.14", default-features = false }
+tonic = { version = "0.14", default-features = false, features = [
+"tls-native-roots"
+] }
+rustls = { version = "0.23", features = ["aws-lc-rs"] }
