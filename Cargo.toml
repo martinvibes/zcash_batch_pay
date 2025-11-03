@@ -15,3 +15,9 @@ tonic = { version = "0.14", default-features = false, features = [
 "tls-native-roots"
 ] }
 rustls = { version = "0.23", features = ["aws-lc-rs"] }
+
+# ZIP 32
+aes = "0.8"
+bip0039 = { version = "0.12" }
+fpe = { version = "0.6", default-features = false, features = ["alloc"] }
+zip32 = { version = "0.2", default-features = false }
