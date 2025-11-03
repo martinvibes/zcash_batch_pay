@@ -1,13 +1,13 @@
 [package]
 name = "zcash_batch_pay"
-version = "0.1.0"
-edition = "2021"
+rust-version = "1.85.1"
+edition = "2024"
 
 [dependencies]
 tokio = { version = "1", features = ["full"] }
-zcash_client_backend = { git ="https://github.com/zcash/librustzcash.git", rev = "9f47de607641068813d3768a893fda822c93041b", features = ["lightwalletd-tonic-transport"] }
-zcash_client_memory = { git ="https://github.com/zcash/librustzcash.git", rev = "9f47de607641068813d3768a893fda822c93041b" }
-zcash_protocol = { git ="https://github.com/zcash/librustzcash.git", rev = "9f47de607641068813d3768a893fda822c93041b" }
+zcash_client_backend = { git ="https://github.com/zcash/librustzcash.git", rev = "9f47de6", features = ["lightwalletd-tonic-transport", "transparent-inputs"] }
+zcash_client_memory = { git ="https://github.com/zcash/librustzcash.git" , rev = "9f47de6", features = ["transparent-inputs"] }
+zcash_protocol = { git ="https://github.com/zcash/librustzcash.git", rev = "9f47de6"}
 
 ## gRPC Web dependencies
 prost = { version = "0.14", default-features = false }
@@ -18,6 +18,6 @@ rustls = { version = "0.23", features = ["aws-lc-rs"] }
 
 # ZIP 32
 aes = "0.8"
-bip0039 = { version = "0.12" }
+bip0039 = "0.12"
 fpe = { version = "0.6", default-features = false, features = ["alloc"] }
 zip32 = { version = "0.2", default-features = false }

@@ -1,16 +1,19 @@
 use std::fmt::Error;
+use std::num::NonZeroU32;
 use std::process::CommandArgs;
 
+use bip0039::{English, Mnemonic};
 use tonic::transport::{Channel, ClientTlsConfig, Endpoint};
-use tonic::IntoRequest;
+use tonic::{IntoRequest, Response};
+use zcash_client_backend::data_api::wallet::{self, ConfirmationsPolicy};
 use zcash_client_backend::data_api::{
     Account, AccountBirthday, AccountPurpose, InputSource, WalletRead, WalletSummary, WalletWrite,
 };
 use zcash_client_backend::data_api::{WalletCommitmentTrees, Zip32Derivation};
 use zcash_client_backend::keys::{UnifiedFullViewingKey, UnifiedSpendingKey};
-use zcash_client_backend::proto::service;
+use zcash_client_backend::proto::service::{self, BlockId};
 use zcash_client_backend::proto::service::{
-    compact_tx_streamer_client::CompactTxStreamerClient, ChainSpec,
+    ChainSpec, compact_tx_streamer_client::CompactTxStreamerClient,
 };
 use zcash_client_memory::MemoryWalletDb;
 use zcash_protocol::consensus::{Parameters, TEST_NETWORK};
@@ -18,27 +21,30 @@ use zip32::AccountId;
 
 mod client;
 
-pub struct SpendinAccount<P: Parameters> {
+pub struct SpendingAccount<P: Parameters> {
     memory_db: MemoryWalletDb<P>,
     client: CompactTxStreamerClient<Channel>,
 }
 
-impl<P: Parameters> SpendinAccount<P> {
+impl<P: Parameters> SpendingAccount<P> {
     pub fn new(
         memory_db: MemoryWalletDb<P>,
         client: CompactTxStreamerClient<Channel>,
-    ) -> SpendinAccount<P> {
-        SpendinAccount { memory_db, client }
+    ) -> SpendingAccount<P> {
+        SpendingAccount { memory_db, client }
     }
 
     pub async fn init(
-        &self,
+        &mut self,
         seed_phrase: &str,
-        birthday: u32,
+        birthday: u64,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let ufsk =
-            UnifiedSpendingKey::from_seed(&TEST_NETWORK, seed_phrase.as_bytes(), AccountId::ZERO)
-                .unwrap();
+        let mnemonic = Mnemonic::<English>::from_phrase(seed_phrase)?;
+
+        // Convert mnemonic to seed (with optional passphrase)
+        let seed = mnemonic.to_seed(""); // Empty passphrase
+
+        let ufsk = UnifiedSpendingKey::from_seed(&TEST_NETWORK, &seed, AccountId::ZERO).unwrap();
         let unified_key = ufsk.to_unified_full_viewing_key();
 
         // Construct an `AccountBirthday` for the account's birthday.
@@ -51,7 +57,7 @@ impl<P: Parameters> SpendinAccount<P> {
             };
             let treestate = self.client.get_tree_state(request).await?.into_inner();
             AccountBirthday::from_treestate(treestate, None)
-                .map_err(|_| Err("birthday failure"))
+                .map_err(|_| "birthday failure")
                 .expect("birthday tree step failing")
         };
 
@@ -64,6 +70,27 @@ impl<P: Parameters> SpendinAccount<P> {
         );
 
         Ok(())
+    }
+
+    pub async fn get_latest_block(&mut self) -> Result<BlockId, Box<dyn std::error::Error>> {
+        let a = self
+            .client
+            .get_latest_block(ChainSpec::default().into_request())
+            .await?;
+        Ok(a.into_inner())
+    }
+
+    pub async fn wallet_summary(
+        &mut self,
+    ) -> Result<
+        WalletSummary<<MemoryWalletDb<P> as WalletRead>::AccountId>,
+        Box<dyn std::error::Error>,
+    > {
+        let wallet_summary = self
+            .memory_db
+            .get_wallet_summary(ConfirmationsPolicy::MIN)?
+            .unwrap();
+        Ok(wallet_summary)
     }
 }
 
@@ -86,12 +113,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut test_client = CompactTxStreamerClient::new(channel.clone());
 
-    let request = ChainSpec::default();
-    let latest_block = test_client.get_latest_block(request.into_request()).await?;
+    let mut account = SpendingAccount::new(memory_wallet, test_client);
+    let seed_phrase = "bronze foil box peace chunk use veteran course friend help chuckle ketchup destroy spin village alien embark gospel thank sustain afford hidden shadow suffer";
 
-    println!("latest block: {:?}", latest_block.into_inner());
+    let latest_block = account.get_latest_block().await?;
 
-    println!("Hello, world!");
+    println!("latest block: {:?}", latest_block);
+
+    account.init(seed_phrase, latest_block.height).await?;
+    println!("account initialized");
 
     Ok(())
 }
