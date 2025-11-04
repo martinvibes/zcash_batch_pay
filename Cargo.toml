@@ -9,6 +9,10 @@ zcash_client_backend = { git ="https://github.com/zcash/librustzcash.git", rev =
 zcash_client_memory = { git ="https://github.com/zcash/librustzcash.git" , rev = "9f47de6", features = ["transparent-inputs"] }
 zcash_client_sqlite = { git ="https://github.com/zcash/librustzcash.git" , rev = "9f47de6", features = ["transparent-inputs", "unstable"] }
 zcash_protocol = { git ="https://github.com/zcash/librustzcash.git", rev = "9f47de6"}
+zcash_address = { git ="https://github.com/zcash/librustzcash.git", rev = "9f47de6" }
+zcash_transparent = { git ="https://github.com/zcash/librustzcash.git", rev = "9f47de6"}
+zcash_proofs = { git ="https://github.com/zcash/librustzcash.git", rev = "9f47de6", features = ["bundled-prover"]}
+zcash_keys = { git ="https://github.com/zcash/librustzcash.git", rev = "9f47de6", features = ["orchard", "sapling", "transparent-inputs"]}
 
 ## gRPC Web dependencies
 prost = { version = "0.14", default-features = false }
@@ -32,3 +36,4 @@ rand_distr = { version = "0.4", default-features = false }
 
 
 rusqlite = { version = "0.37", features = ["bundled"] }
+dotenvy = "0.15"

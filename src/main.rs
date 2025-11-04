@@ -1,4 +1,5 @@
 use std::borrow::BorrowMut;
+use std::convert::Infallible;
 use std::fmt::Error;
 use std::num::NonZeroU32;
 use std::path::Path;
@@ -8,24 +9,38 @@ use bip0039::{English, Mnemonic};
 use rand::RngCore;
 use tonic::transport::{Channel, ClientTlsConfig, Endpoint};
 use tonic::{IntoRequest, Response};
-use zcash_client_backend::data_api::wallet::{self, ConfirmationsPolicy};
+use zcash_address::ZcashAddress;
+use zcash_address::unified::Address;
+use zcash_client_backend::address;
+use zcash_client_backend::data_api::wallet::{
+    self, ConfirmationsPolicy, SpendingKeys, create_proposed_transactions,
+    propose_standard_transfer_to_address,
+};
 use zcash_client_backend::data_api::{
     Account, AccountBirthday, AccountPurpose, InputSource, WalletRead, WalletSummary, WalletWrite,
 };
 use zcash_client_backend::data_api::{WalletCommitmentTrees, Zip32Derivation};
+use zcash_client_backend::fees::StandardFeeRule;
 use zcash_client_backend::keys::{UnifiedFullViewingKey, UnifiedSpendingKey};
-use zcash_client_backend::proto::service::{self, BlockId};
+use zcash_client_backend::proto::proposal::FeeRule;
+use zcash_client_backend::proto::service::{self, BlockId, RawTransaction};
 use zcash_client_backend::proto::service::{
     ChainSpec, compact_tx_streamer_client::CompactTxStreamerClient,
 };
 use zcash_client_backend::sync::run;
+use zcash_client_backend::wallet::OvkPolicy;
 use zcash_client_memory::{MemBlockCache, MemoryWalletDb};
+use zcash_client_sqlite::error::SqliteClientError;
 use zcash_client_sqlite::util::{Clock, SystemClock};
 use zcash_client_sqlite::wallet::init::init_wallet_db;
-use zcash_protocol::consensus::{Parameters, TEST_NETWORK};
+use zcash_keys::address::Address as AddressFromZcashKeys;
+use zcash_proofs::prover::LocalTxProver;
+use zcash_protocol::consensus::{Parameters, TEST_NETWORK, TestNetwork};
+use zcash_protocol::value::Zatoshis;
+use zcash_transparent::address::TransparentAddress;
 use zip32::AccountId;
 
-use zcash_client_sqlite::{AccountUuid, FsBlockDb, WalletDb};
+use zcash_client_sqlite::{AccountUuid, FsBlockDb, ReceivedNoteId, WalletDb};
 
 use rand_core::OsRng;
 use time::OffsetDateTime;
@@ -36,6 +51,7 @@ pub struct SpendingAccount<C: BorrowMut<rusqlite::Connection>, P: Parameters, CL
 {
     db: WalletDb<C, P, CL, R>,
     client: CompactTxStreamerClient<Channel>,
+    seed: Option<[u8; 64]>,
 }
 
 impl<C: BorrowMut<rusqlite::Connection>, P: Parameters, CL: Clock, R: RngCore>
@@ -44,22 +60,21 @@ impl<C: BorrowMut<rusqlite::Connection>, P: Parameters, CL: Clock, R: RngCore>
     pub fn new(
         memory_db: WalletDb<C, P, CL, R>,
         client: CompactTxStreamerClient<Channel>,
+        seed_phrase: &str,
     ) -> SpendingAccount<C, P, CL, R> {
+        let mnemonic = Mnemonic::<English>::from_phrase(seed_phrase).unwrap();
+        // Convert mnemonic to seed (with optional passphrase)
+        let seed = mnemonic.to_seed(""); // Empty passphrase 
+
         SpendingAccount {
             db: memory_db,
             client,
+            seed: Some(seed),
         }
     }
 
-    pub async fn init(
-        &mut self,
-        seed_phrase: &str,
-        birthday: u64,
-    ) -> Result<(), Box<dyn std::error::Error>> {
-        let mnemonic = Mnemonic::<English>::from_phrase(seed_phrase)?;
-
-        // Convert mnemonic to seed (with optional passphrase)
-        let seed = mnemonic.to_seed(""); // Empty passphrase
+    pub async fn init(&mut self, birthday: u64) -> Result<(), Box<dyn std::error::Error>> {
+        let seed = self.seed.unwrap();
 
         let ufsk = UnifiedSpendingKey::from_seed(&TEST_NETWORK, &seed, AccountId::ZERO).unwrap();
         let unified_key = ufsk.to_unified_full_viewing_key();
@@ -87,6 +102,8 @@ impl<C: BorrowMut<rusqlite::Connection>, P: Parameters, CL: Clock, R: RngCore>
                 None,
             )
             .unwrap();
+
+        self.seed = Some(seed);
 
         Ok(())
     }
@@ -130,10 +147,127 @@ impl<C: BorrowMut<rusqlite::Connection>, P: Parameters, CL: Clock, R: RngCore>
             .unwrap();
         Ok(wallet_summary)
     }
+
+    pub async fn print_address(&mut self) {
+        let account_ids = self.db.get_account_ids().unwrap();
+        let account_id = account_ids.get(0).unwrap();
+
+        let addresses = self.db.list_addresses(account_id.clone()).unwrap();
+
+        if addresses.len() != 1 {
+            println!("more or less than one address found");
+            return;
+        }
+
+        let address = addresses.get(0).unwrap().address();
+        println!(
+            "shielded addresses: {:?}",
+            address.to_zcash_address(&TEST_NETWORK).to_string()
+        );
+    }
+
+    pub async fn transfer(&mut self, amount: u64, recipient: &str) {
+        // Parse address (works for both shielded and transparent)
+        let transparent_address_recipient = ZcashAddress::try_from_encoded(recipient)
+            .unwrap()
+            .convert::<AddressFromZcashKeys>()
+            .unwrap();
+
+        println!(
+            "transparent address recipient: {:?}",
+            transparent_address_recipient
+                .to_transparent_address()
+                .unwrap()
+                .to_zcash_address(zcash_protocol::consensus::NetworkType::Test)
+                .to_string()
+        );
+
+        let account_ids = self.db.get_account_ids().unwrap();
+        let spend_from_account_id = account_ids.get(0).unwrap();
+
+        let usks = self.db.get_unified_full_viewing_keys().unwrap();
+
+        let usk =
+            UnifiedSpendingKey::from_seed(&TEST_NETWORK, &self.seed.unwrap(), AccountId::ZERO)
+                .unwrap();
+
+        let account = self
+            .db
+            .get_account(spend_from_account_id.clone())
+            .unwrap()
+            .unwrap();
+
+        let proposal = propose_standard_transfer_to_address::<_, _, SqliteClientError>(
+            &mut self.db,
+            &TEST_NETWORK,
+            StandardFeeRule::Zip317,
+            spend_from_account_id.clone(),
+            ConfirmationsPolicy::MIN,
+            &transparent_address_recipient,
+            Zatoshis::const_from_u64(amount),
+            None,
+            None,
+            zcash_protocol::ShieldedProtocol::Orchard,
+        )
+        .unwrap();
+
+        // Build and broadcast transaction
+        let prover = LocalTxProver::bundled();
+        let spending_keys = SpendingKeys::from_unified_spending_key(usk.clone());
+
+        let txids = create_proposed_transactions::<
+            _,
+            _,
+            <WalletDb<C, P, CL, R> as InputSource>::Error,
+            _,
+            Infallible,
+            _,
+        >(
+            &mut self.db,
+            &TEST_NETWORK,
+            &prover,
+            &prover,
+            &spending_keys,
+            OvkPolicy::Sender,
+            &proposal,
+        )
+        .unwrap();
+
+        let txid = txids.first().clone();
+
+        let transaction = self
+            .db
+            .get_transaction(txid)
+            .unwrap()
+            .ok_or("Transaction not found")
+            .unwrap();
+
+        let mut tx_bytes = Vec::new();
+        transaction.write(&mut tx_bytes).unwrap();
+
+        let response = self
+            .client
+            .send_transaction(RawTransaction {
+                data: tx_bytes,
+                height: 0,
+            })
+            .await
+            .unwrap();
+
+        if response.get_ref().error_code != 0 {
+            println!("Network error: {}", response.get_ref().error_message);
+            return;
+        }
+
+        println!("transaction sent {:?}", txid.to_string());
+    }
 }
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Load environment variables from .env file
+    dotenvy::dotenv().ok();
+
     let max_checkpoints = 100;
     let params = TEST_NETWORK;
 
@@ -159,8 +293,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut test_client = CompactTxStreamerClient::new(channel.clone());
 
-    let mut account = SpendingAccount::new(wallet_db, test_client);
-    let seed_phrase = "bronze foil box peace chunk use veteran course friend help chuckle ketchup destroy spin village alien embark gospel thank sustain afford hidden shadow suffer";
+    let seed_phrase = std::env::var("SEED_PHRASE").expect("SEED_PHRASE must be set in .env file");
+    let mut account = SpendingAccount::new(wallet_db, test_client, &seed_phrase);
 
     let latest_block = account.get_latest_block().await?;
 
@@ -172,6 +306,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     account.sync().await;
 
     let wallet_summary = account.wallet_summary().await?;
+    println!("wallet summary: {:?}", wallet_summary);
+
+    account.print_address().await;
+
+    let to_address = "tmC3F49jzP8ocdkGkgSgTrMLCZPRD6sKpDK";
+
+    account.transfer(100, to_address).await;
 
     Ok(())
 }
