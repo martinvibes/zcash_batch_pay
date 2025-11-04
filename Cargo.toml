@@ -7,6 +7,7 @@ edition = "2024"
 tokio = { version = "1", features = ["full"] }
 zcash_client_backend = { git ="https://github.com/zcash/librustzcash.git", rev = "9f47de6", features = ["lightwalletd-tonic-transport", "transparent-inputs"] }
 zcash_client_memory = { git ="https://github.com/zcash/librustzcash.git" , rev = "9f47de6", features = ["transparent-inputs"] }
+zcash_client_sqlite = { git ="https://github.com/zcash/librustzcash.git" , rev = "9f47de6", features = ["transparent-inputs", "unstable"] }
 zcash_protocol = { git ="https://github.com/zcash/librustzcash.git", rev = "9f47de6"}
 
 ## gRPC Web dependencies
@@ -21,3 +22,13 @@ aes = "0.8"
 bip0039 = "0.12"
 fpe = { version = "0.6", default-features = false, features = ["alloc"] }
 zip32 = { version = "0.2", default-features = false }
+
+time = { version = "0.3.22", default-features = false }
+
+# CSPRNG
+rand = { version = "0.8", default-features = false }
+rand_core = { version = "0.6", default-features = false }
+rand_distr = { version = "0.4", default-features = false }
+
+
+rusqlite = { version = "0.37", features = ["bundled"] }
